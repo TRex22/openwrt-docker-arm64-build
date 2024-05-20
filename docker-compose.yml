@@ -2,8 +2,14 @@ version: "3"
 services:
   qemu:
     container_name: openwrt
-    #image: albrechtloh/qemu-openwrt:openwrt-23.05.2-10
-    image: "openwrt-docker-arm64"
+    #image: albrechtloh/qemu-openwrt:openwrt-23.05.3-2
+    #image: "openwrt-docker-arm64"
+    #image: "openwrt-docker-arm64:latest"
+    build:
+      dockerfile: Dockerfile
+      context: .
+      args: 
+        OPENWRT_VERSION: "23.05.3"
 
     environment:
       #DEBUG: "y"
@@ -14,13 +20,21 @@ services:
 
       # Define which physical or virtual interfaces shall be attach direct to OpenWrt
       #WAN_IF: "enx00e04c0407a6" # Use this option to define a specific physical Ethernet interface
-      WAN_IF: "none" # No WAN interface defined. This is useful if OpenWrt WAN acts a USB Wi-Fi client or as USB cellular modem
+      #WAN_IF: "none" # No WAN interface defined. This is useful if OpenWrt WAN acts a USB Wi-Fi client or as USB cellular modem
 
-      LAN_IF: "veth" # veth pair between OpenWrt and host system
+      #LAN_IF: "veth" # veth pair between OpenWrt and host system
       #LAN_IF: "enx00e04d68033f" # Use this option to define a specific physical Ethernet interface
+      #LAN_IF: "end0"
+      #LAN_IF: "enp1s0"
+      
+      LAN_IF: "end0" # Use this option to define a specific physical Ethernet interface
+      WAN_IF: "enp1s0" # Use this option to define a specific physical Ethernet interface
 
       # Make LuCI OpenWrt web interface accessible via host LAN
-      FORWARD_LUCI: "true" 
+      FORWARD_LUCI: "false"
+
+      # Make LuCI OpenWrt web interface accessible via host LAN
+      #FORWARD_LUCI: "true" 
 
       # USB passthrough
       # Format <vendorID>:<productID> like 'lsusb' is given
@@ -33,12 +47,13 @@ services:
       - 8006:8006
       # Port 8000 is available only when Docker WAN network is used.
       # Use script /usr/bin/fw_wan_open_http to open the port
+      #- 80:8000
       - 8000:8000
       # SSH
       # Use script /usr/bin/fw_wan_open_ssh to open the port
       - 8022:8022
     stop_grace_period: 2m
-    restart: on-failure
+    restart: always
     
     # The following settings are mandantory to run the container
     devices:
@@ -51,7 +66,7 @@ services:
     privileged: true
     volumes:
       - /dev:/dev/
-      - data:/storage/
+      - openwrt-data:/storage/
 
 volumes:
-  data:
+  openwrt-data:

@@ -74,7 +74,7 @@ supervisorctl start openwrt # Start openwrt
 # ******* LuCi forwarding handling *******
 if [[ $FORWARD_LUCI = "true" ]]; then
   if [[ $LAN_IF = "veth" ]]; then
-    info "Enable LuCI forwading to host LAN at port 9000"
+    info "Enable LuCI forwading to host LAN at port 80"
     supervisorctl start caddy # Start reverse proxy
   else
     error "LuCI forwading is only available if enviroment variable is set to LAN_IF: 'veth'"
