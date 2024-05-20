@@ -72,7 +72,7 @@ RUN mkdir /var/vm \
     && echo "OPENWRT_VERSION=\"${OPENWRT_VERSION}\"" > /var/vm/openwrt_metadata.conf \
     && echo "OPENWRT_IMAGE_CREATE_DATETIME=\"`date`\"" >> /var/vm/openwrt_metadata.conf \
     && echo "OPENWRT_IMAGE_ID=\"`uuidgen`\"" >> /var/vm/openwrt_metadata.conf \
-    && opkg remove --force-depends dnsmasq odhcpd
+    && chroot /tmp/openwrt-rootfs opkg remove --force-depends dnsmasq odhcpd
 
 COPY supervisord.conf /etc/supervisord.conf
 COPY ./src /run/
