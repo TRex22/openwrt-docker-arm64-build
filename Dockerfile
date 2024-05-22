@@ -7,6 +7,7 @@ ARG VERSION_ARG="0.1"
 RUN mkdir -p /tmp/noVNC-${NOVNC_VERSION}
 ADD https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz /tmp/novnc.tar.gz
 ADD https://github.com/bugy/script-server/releases/download/1.18.0/script-server.zip /tmp/noVNC-${NOVNC_VERSION}/script-server.zip
+ADD https://raw.githubusercontent.com/tavinus/opkg-upgrade/master/opkg-upgrade.sh /tmp/opkg-upgrade.sh
 
 RUN apk add --no-cache \
         supervisor \
@@ -65,14 +66,19 @@ RUN mkdir /var/vm \
     && chroot /tmp/openwrt-rootfs opkg install hostapd wpa-supplicant kmod-mt7921u --download-only \
     # Download celluar network support \
     && chroot /tmp/openwrt-rootfs opkg install modemmanager kmod-usb-net-qmi-wwan luci-proto-modemmanager qmi-utils --download-only \
+    # Extra UI tools
+    && chroot /tmp/openwrt-rootfs opkg install luci-app-statistics bmon luci-app-nlbwmon --download-only \
+    && chroot /tmp/openwrt-rootfs opkg remove --force-depends dnsmasq odhcpd unbound \
+    && chroot /tmp/openwrt-rootfs opkg install git git-http nano  --download-only \
+    #&& chroot /tmp/openwrt-rootfs sh /tmp/opkg-upgrade.sh -f \
+    # && git clone https://github.com/tavinus/opkg-upgrade.git && /root/opkg-upgrade/opkg-upgrade.sh -f \
     # Copy downloaded IPKs into the Docker image \
     && cp /tmp/openwrt-rootfs/*.ipk /var/vm/packages \
     && rm -rf /tmp/openwrt-rootfs \
     && rm /tmp/rootfs-${OPENWRT_VERSION}.tar.gz \
     && echo "OPENWRT_VERSION=\"${OPENWRT_VERSION}\"" > /var/vm/openwrt_metadata.conf \
     && echo "OPENWRT_IMAGE_CREATE_DATETIME=\"`date`\"" >> /var/vm/openwrt_metadata.conf \
-    && echo "OPENWRT_IMAGE_ID=\"`uuidgen`\"" >> /var/vm/openwrt_metadata.conf \
-    && chroot /tmp/openwrt-rootfs opkg remove --force-depends dnsmasq odhcpd
+    && echo "OPENWRT_IMAGE_ID=\"`uuidgen`\"" >> /var/vm/openwrt_metadata.conf 
 
 COPY supervisord.conf /etc/supervisord.conf
 COPY ./src /run/
