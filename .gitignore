@@ -1,1 +1,6 @@
-
+.pytest_cache/
+test/tests/__pycache__/
+test/__pycache__/
+test/tests/.pytest_cache/
+.venv
+web-backend/target

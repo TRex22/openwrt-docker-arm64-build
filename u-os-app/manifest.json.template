@@ -1,0 +1,204 @@
+{
+  "manifestVersion": "0.2",
+  "version": "APPVERSION_TO_INSERT",
+  "title": "OpenWrt preview",
+  "description": "Open source OpenWrt software router project (https://openwrt.org/). This software router preview requires a UC20-M3000/4000 with enabled KVM Linux kernel feature.",
+  "logo": "openwrt_logo_text_vertical_blue_and_dark_blue.svg",
+  "vendor": {
+    "name": "Albrecht Lohofener",
+    "url": "https://github.com/AlbrechtL/openwrt-docker",
+    "email": "albrechtloh@gmx.de",
+    "street": "",
+    "zip": "",
+    "city": "",
+    "country": "Germany"
+  },
+  "services": {
+    "u-link-addon-u-link": {
+      "type": "docker-compose",
+      "config": {
+        "image": "local/openwrt-docker:latest",
+        "privileged": true,
+        "restart": "no",
+        "volumes": [
+          "data:/storage",
+          "licenses:/licenses",
+          "/dev:/dev"
+        ],
+        "containerName": "u-os-app-openwrt",
+        "ports": ["127.0.0.1:65432:8006"],
+        "pid": "host",
+        "capAdd": ["NET_ADMIN"],
+        "deviceCgroupRules": ["c *:* rwm"],
+        "environment": {
+          "IS_U_OS_APP": "y"
+        },
+        "extraHosts": ["host.docker.internal:host-gateway"]
+      }
+    }
+  },
+  "publish": {
+    "openwrt": {
+      "from": "http://127.0.0.1:65432",
+      "to": ""
+    }
+  },
+  "platform": ["ucu"],
+  "environments": {
+    "edgenode": {
+      "type": "docker-compose",
+      "config": {
+        "volumes": {
+          "data": {},
+          "licenses": {
+            "driver": "local-public"
+          }
+        }
+      }
+    }
+  },
+  "settings": {
+    "environmentVariables": [
+      {
+        "name": "WAN_IF",
+        "label": "WAN Ethernet interface",
+        "description": "Which Ethernet interface shall be used by OpenWrt exclusively? WARNING: The selected Ethernet interface will be disconnect inside u-OS. Leave it blank if not used.",
+        "select": [
+          {
+            "label": "none",
+            "value": "none",
+            "default": true
+          },
+          {
+            "label": "u-OS (poor performace)",
+            "value": ""
+          },
+          {
+            "label": "eth-x4",
+            "value": "eth-x4"
+          },
+          {
+            "label": "eth-x5",
+            "value": "eth-x5"
+          },
+          {
+            "label": "eth-x6",
+            "value": "eth-x6"
+          },
+          {
+            "label": "eth-x7",
+            "value": "eth-x7"
+          }
+        ]
+      },
+      {
+        "name": "LAN_IF",
+        "label": "LAN Ethernet interface",
+        "description": "Which Ethernet interface shall be used by OpenWrt exclusively? WARNING: The selected Ethernet interface will be disconnect inside u-OS. Leave it blank if not used.",
+        "select": [
+          {
+            "label": "Virtual LAN to u-OS",
+            "value": "veth",
+            "default": true
+          },
+          {
+            "label": "none",
+            "value": ""
+          },
+          {
+            "label": "eth-x4",
+            "value": "eth-x4"
+          },
+          {
+            "label": "eth-x5",
+            "value": "eth-x5"
+          },
+          {
+            "label": "eth-x6",
+            "value": "eth-x6"
+          },
+          {
+            "label": "eth-x7",
+            "value": "eth-x7"
+          }
+        ]
+      },
+      {
+        "name": "FORWARD_LUCI",
+        "label": "Forward OpenWrt web interface to port 9000",
+        "description": "Shall OpenWrt LuCI be forwarded to local port 9000?",
+        "select": [
+          {
+            "label": "Yes",
+            "value": "true",
+            "default": true
+          },
+          {
+            "label": "No",
+            "value": "false"
+          }
+        ]
+      },
+      {
+        "name": "USB_1",
+        "label": "Attached USB device 1. Format '<vendorID>:<productID>' e.g. '0e8d:7961' like 'lsusb' shows.",
+        "description": "Attached USB device 1. Format '<vendorID>:<productID>' e.g. '0e8d:7961' like 'lsusb' shows.",
+        "default": ""
+      },
+      {
+        "name": "USB_2",
+        "label": "Attached USB device 2. Format '<vendorID>:<productID>' e.g. '0e8d:7961' like 'lsusb' shows.",
+        "description": "Attached USB device 2. Format '<vendorID>:<productID>' e.g. '0e8d:7961' like 'lsusb' shows.",
+        "default": ""
+      },
+      {
+        "name": "CPU_COUNT",
+        "label": "Number of virtualized CPUs",
+        "description": "You can select how many CPUs OpenWrt can use. Leave it by default if you are unsure. Default is 2.",
+        "select": [
+          {
+            "label": "1",
+            "value": "1"
+          },
+          {
+            "label": "2",
+            "value": "2",
+            "default": true
+          },
+          {
+            "label": "3",
+            "value": "3"
+          },
+          {
+            "label": "4",
+            "value": "4"
+          }
+        ]
+      },
+      {
+        "name": "RAM_COUNT",
+        "label": "Amount of memory",
+        "description": "You can select how much memory OpenWrt can use. Leave it by default if you are unsure. Default is 256 MB.",
+        "select": [
+          {
+            "label": "250 MB",
+            "value": "250",
+            "default": true
+          },
+          {
+            "label": "512 MB",
+            "value": "512"
+          },
+          {
+            "label": "1024 MB",
+            "value": "1024"
+          },
+          {
+            "label": "2048 MB",
+            "value": "2048"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -9,8 +9,11 @@ trap - ERR
 . /run/install_openwrt_rootfs.sh
 . /run/migrate_openwrt_rootfs.sh
 
-VERS=$(qemu-system-aarch64 --version | head -n 1 | cut -d '(' -f 1)
-FILE=/storage/rootfs-${OPENWRT_IMAGE_ID}.img
+# CPU architecture specific
+CPU_ARCH=$(arch)
+
+VERS=$(qemu-system-"$CPU_ARCH" --version | head -n 1 | cut -d '(' -f 1)
+FILE=/storage/squashfs-combined-${OPENWRT_IMAGE_ID}.img
 
 # Attach physical interfaces to Docker container
 attach_eth_if () {
@@ -42,6 +45,10 @@ attach_eth_if () {
   #ip link add link $CONTAINER_IF name $QEMU_IF type macvtap mode bridge
   ip link add link $CONTAINER_IF name $QEMU_IF type macvtap mode passthru
 
+  # Enable multicast (important for IPv6)
+  #ip link set dev $QEMU_IF allmulticast on # not working for some reason
+  ip link set dev $QEMU_IF promisc on # lets use the hammer
+
   # Create MAC address for new interface
   QEMU_MAC_OUI="52:54:00"
   read MAC </sys/class/net/$CONTAINER_IF/address
@@ -57,6 +64,7 @@ attach_veth_if () {
   VETH_IF_HOST=$1
   VETH_IF_CONTAINER=$2
   QEMU_IF=$3
+  OPTION=$4
 
   info "Creating virtual Ethernet interfaces pairs between host system ($VETH_IF_HOST) and container ($VETH_IF_CONTAINER)..."
 
@@ -65,7 +73,7 @@ attach_veth_if () {
     nsenter --target 1 --uts --net --ipc --mount ip link add $VETH_IF_HOST type veth peer name $VETH_IF_CONTAINER
     nsenter --target 1 --uts --net --ipc --mount ip link set $VETH_IF_HOST up
 
-    if [[ -z "${IS_U_OS_APP}" ]]; then
+    if [[ -z "${IS_U_OS_APP}" && $OPTION != "nofixedip" ]]; then
       nsenter --target 1 --uts --net --ipc --mount ip addr add 172.31.1.2/24 dev $VETH_IF_HOST
     fi
   else
@@ -119,35 +127,42 @@ attach_veth_if () {
   fi
 }
 
+# Handle dirfferent architectures
+if [ $CPU_ARCH = "aarch64" ]; then
+  CPU_ARGS="-M virt -bios /usr/share/qemu/edk2-aarch64-code.fd -vga none -device ramfb"
+else
+  CPU_ARGS="-M pc -vga std"
+fi
+
 # Check KVM
 info "Checking for KVM ..."
 KVM_ERR=""
-CPU_ARGS="-cpu cortex-a53"
 if [ ! -e /dev/kvm ]; then
     KVM_ERR="(device file missing)"
   else
     if ! sh -c 'echo -n > /dev/kvm' &> /dev/null; then
       KVM_ERR="(no write access)"
     else
-      CPU_ARGS="--enable-kvm -cpu host"
       info "KVM detected"
     fi
 fi
 if [ -n "$KVM_ERR" ]; then
-    info "KVM acceleration not detected $KVM_ERR, this will cause a major loss of performance."
+    error "KVM acceleration not detected $KVM_ERR."
 fi
 
 # Attach physical PHY to container
 LAN_ARGS=""
-if [[ -z "${LAN_IF}" ]]; then
+LAN_IF_NAME=$(echo $LAN_IF | cut -d',' -f1)
+LAN_IF_OPTION=$(echo $LAN_IF | cut -d',' -f2)
+if [[ -z "${LAN_IF_NAME}" || $LAN_IF_NAME = "host" ]]; then
   LAN_ARGS="-device virtio-net,netdev=qlan0 -netdev user,id=qlan0,net=192.168.1.0/24"
-elif [[ $LAN_IF = "veth" ]]; then
-  attach_veth_if veth-openwrt0 veth1 qlan1
+elif [[ $LAN_IF_NAME = "veth" ]]; then
+  attach_veth_if veth-openwrt0 veth1 qlan1 $LAN_IF_OPTION
   exec 30<>/dev/tap$(cat /sys/class/net/qlan1/ifindex)
   LAN_ARGS="-device virtio-net-pci,netdev=hostnet0,mac=$(cat /sys/class/net/qlan1/address) \
     -netdev tap,fd=30,id=hostnet0"
 else
-  HOST_LAN_IF=$LAN_IF
+  HOST_LAN_IF=$LAN_IF_NAME
   attach_eth_if $HOST_LAN_IF $HOST_LAN_IF qlan0
   exec 30<>/dev/tap$(cat /sys/class/net/qlan0/ifindex)
   LAN_ARGS="-device virtio-net-pci,netdev=hostnet0,mac=$(cat /sys/class/net/qlan0/address) \
@@ -155,7 +170,7 @@ else
 fi
 
 WAN_ARGS=""
-if [[ -z "${WAN_IF}" ]]; then
+if [[ -z "${WAN_IF}" || $WAN_IF = "host" ]]; then
   WAN_ARGS="-device virtio-net,netdev=qwan0 -netdev user,id=qwan0,hostfwd=tcp::8000-:80,hostfwd=tcp::8022-:22"
 elif [[ $WAN_IF = "none" ]]; then
   WAN_ARGS=""
@@ -169,12 +184,25 @@ fi
 
 # Attach USB interface
 USB_ARGS=""
-if [[ -z "${USB_VID_1}" || -z "${USB_PID_1}" ]]; then
-  USB_ARGS=""
+USB_1_ARGS=""
+USB_2_ARGS=""
+if [[ -z "${USB_1}" ]]; then
+  USB_1_ARGS=""
 else
-  USB_ARGS="-device usb-host,vendorid=0x$USB_VID_1,productid=0x$USB_PID_1"
+  USB_VID_1=$(echo $USB_1 | cut -d':' -f1)
+  USB_PID_1=$(echo $USB_1 | cut -d':' -f2)
+  USB_1_ARGS="-device usb-host,vendorid=0x$USB_VID_1,productid=0x$USB_PID_1"
 fi
 
+if [[ -z "${USB_2}" ]]; then
+  USB_2_ARGS=""
+else
+  USB_VID_2=$(echo $USB_2 | cut -d':' -f1)
+  USB_PID_2=$(echo $USB_2 | cut -d':' -f2)
+  USB_2_ARGS="-device usb-host,vendorid=0x$USB_VID_2,productid=0x$USB_PID_2"
+fi
+
+USB_ARGS="${USB_1_ARGS} ${USB_2_ARGS}"
 
 info "Booting image using $VERS..."
 
@@ -182,14 +210,12 @@ info "Booting image using $VERS..."
 [[ "$DEBUG" == [Yy1]* ]] && set -x
 
 #************************ FINAL BOOTING ************************
-qemu-system-aarch64 -M virt \
--m 128 \
+exec qemu-system-"$CPU_ARCH" \
+--enable-kvm -cpu host \
+-m $RAM_COUNT \
 -nodefaults \
  $CPU_ARGS -smp $CPU_COUNT \
--bios /usr/share/qemu/edk2-aarch64-code.fd \
 -display vnc=:0,websocket=5700 \
--vga none -device ramfb \
--kernel /var/vm/kernel.bin -append "root=fe00 console=tty0" \
 -blockdev driver=raw,node-name=hd0,cache.direct=on,file.driver=file,file.filename=${FILE} \
 -device virtio-blk-pci,drive=hd0 \
 -device qemu-xhci -device usb-kbd \
@@ -201,6 +227,4 @@ qemu-system-aarch64 -M virt \
  -device virtio-serial \
  -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0
 
-
-# -device virtio-net,netdev=qlan1 -netdev user,id=qlan1,net=192.168.1.0/24,hostfwd=tcp::8000-192.168.1.1:80 \
-# -blockdev driver=raw,node-name=hd0,cache.direct=on,file.driver=file,file.filename=/var/vm/openwrt-armsr-armv8-generic-ext4-combined.img \
+# -kernel /var/vm/kernel.bin -append "root=fe00 console=tty0" \

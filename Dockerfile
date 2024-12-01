@@ -1,90 +1,191 @@
+########################################################################################################################
+# Build stage for rust backend
+########################################################################################################################
+
+FROM rust:alpine AS builder
+
+ARG TARGETPLATFORM
+
+RUN apk update && \
+    apk add --no-cache \
+    musl-dev \
+    gcc
+
+WORKDIR /usr/src/qemu-backend
+COPY ./web-backend .
+
+# Build the application for musl
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        rustup target add aarch64-unknown-linux-musl; \
+    else \
+        rustup target add x86_64-unknown-linux-musl; \
+    fi
+
+# Build the application for the specific target architecture
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        cargo build --release --target aarch64-unknown-linux-musl; \
+        cp /usr/src/qemu-backend/target/aarch64-unknown-linux-musl/release/qemu-openwrt-web-backend /usr/local/bin; \
+    else \
+        cargo build --release --target x86_64-unknown-linux-musl; \
+        cp /usr/src/qemu-backend/target/x86_64-unknown-linux-musl/release/qemu-openwrt-web-backend /usr/local/bin; \
+    fi
+
+########################################################################################################################
+# OpenWrt image
+########################################################################################################################
 FROM alpine:latest
 
-ARG NOVNC_VERSION="1.4.0" 
-ARG OPENWRT_VERSION="23.05.3"
-ARG VERSION_ARG="0.1"
+ARG NOVNC_VERSION="1.5.0" 
+# ARG OPENWRT_VERSION="23.05.5"
+ARG OPENWRT_VERSION="24.10-SNAPSHOT"
+ARG TARGETPLATFORM
+ARG OPENWRT_ROOTFS_IMG
+ARG OPENWRT_KERNEL
+ARG OPENWRT_ROOTFS_TAR
 
-RUN mkdir -p /tmp/noVNC-${NOVNC_VERSION}
-ADD https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz /tmp/novnc.tar.gz
-ADD https://github.com/bugy/script-server/releases/download/1.18.0/script-server.zip /tmp/noVNC-${NOVNC_VERSION}/script-server.zip
-ADD https://raw.githubusercontent.com/tavinus/opkg-upgrade/master/opkg-upgrade.sh /tmp/opkg-upgrade.sh
-
-RUN apk add --no-cache \
-        supervisor \
+# Configure Alpine
+RUN echo "Building for platform '$TARGETPLATFORM'" \
+    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
+        CPU_ARCH="x86_64"; \
+    elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        CPU_ARCH="aarch64"; \
+    else \
+        echo "Error: CPU architecture $TARGETPLATFORM is not supported"; \
+        exit 1; \
+    fi \
+    && apk add --no-cache \
+        multirun \
         bash \
         wget \
-        qemu-system-aarch64 \
+        grep \
+        qemu-system-"$CPU_ARCH" \
         qemu-hw-usb-host \
         qemu-hw-usb-redirect \
         nginx \
+        nginx-mod-stream \
         netcat-openbsd \
-        python3 \
-        py3-pip \
-        py3-virtualenv \
         uuidgen \
-        caddy \
+        usbutils \
+        openssh-client \
+        util-linux-misc \
     && mkdir -p /usr/share/novnc \
-#    && wget https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz -O /tmp/novnc.tar.gz -q
+    && wget https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz -O /tmp/novnc.tar.gz -q \
     && tar -xf /tmp/novnc.tar.gz -C /tmp/ \
     && cd /tmp/noVNC-${NOVNC_VERSION}\
     && mv app core vendor package.json *.html /usr/share/novnc \
-#    && wget https://github.com/bugy/script-server/releases/download/1.18.0/script-server.zip \
-    && unzip -o script-server.zip -d /usr/share/script-server \
-    && python3 -m venv /var/lib/script-server-env \
-    && source /var/lib/script-server-env/bin/activate \
-    && pip install -r /usr/share/script-server/requirements.txt \
     && sed -i 's/^worker_processes.*/worker_processes 1;daemon off;/' /etc/nginx/nginx.conf
-    
-# Get OpenWrt images
-RUN mkdir /var/vm \ 
-    mkdir /var/vm/packages \
-    && if [ "$OPENWRT_VERSION" = "master" ] ; then \
-        wget "https://downloads.openwrt.org/snapshots/targets/armsr/armv8/openwrt-armsr-armv8-generic-ext4-rootfs.img.gz" \
-        -O /var/vm/rootfs-${OPENWRT_VERSION}.img.gz \
-        && wget "https://downloads.openwrt.org/snapshots/targets/armsr/armv8/openwrt-armsr-armv8-generic-kernel.bin" \
-        -O /var/vm/kernel.bin \
-        && wget "https://downloads.openwrt.org/snapshots/targets/armsr/armv8/openwrt-armsr-armv8-rootfs.tar.gz" \
-        -O /tmp/rootfs-${OPENWRT_VERSION}.tar.gz ; \
+
+COPY ./openwrt_additional /var/vm/openwrt_additional
+
+# Handle different CPUs architectures and choose the correct OpenWrt images
+RUN echo "Building for platform '$TARGETPLATFORM'" \
+    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
+        if [ "$OPENWRT_VERSION" = "master" ]; then \
+            OPENWRT_IMAGE="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-x86-64-generic-squashfs-combined.img.gz"; \
+        elif [ "$OPENWRT_VERSION" = "24.10-SNAPSHOT" ]; then \
+            wget https://downloads.openwrt.org/releases/24.10-SNAPSHOT/targets/x86/64/version.buildinfo; \
+            VERSION_BUILDINFO=`cat version.buildinfo`; \
+            OPENWRT_IMAGE="https://downloads.openwrt.org/releases/24.10-SNAPSHOT/targets/x86/64/openwrt-24.10-snapshot-${VERSION_BUILDINFO}-x86-64-generic-squashfs-combined.img.gz"; \
+        else \
+            OPENWRT_IMAGE="https://archive.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-${OPENWRT_VERSION}-x86-64-generic-squashfs-combined.img.gz"; \
+        fi; \
+    elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        if [ "$OPENWRT_VERSION" = "master" ]; then \
+          OPENWRT_IMAGE="https://downloads.openwrt.org/snapshots/targets/armsr/armv8/openwrt-armsr-armv8-generic-squashfs-combined.img.gz"; \
+        elif [ "$OPENWRT_VERSION" = "24.10-SNAPSHOT" ]; then \
+            wget https://downloads.openwrt.org/releases/24.10-SNAPSHOT/targets/armsr/armv8/version.buildinfo; \
+            VERSION_BUILDINFO=`cat version.buildinfo`; \
+            OPENWRT_IMAGE="https://downloads.openwrt.org/releases/24.10-SNAPSHOT/targets/armsr/armv8/openwrt-24.10-snapshot-${VERSION_BUILDINFO}-armsr-armv8-generic-squashfs-combined.img.gz"; \
+        else \
+            OPENWRT_IMAGE="https://archive.openwrt.org/releases/${OPENWRT_VERSION}/targets/armsr/armv8/openwrt-${OPENWRT_VERSION}-armsr-armv8-generic-squashfs-combined.img.gz"; \
+        fi; \
     else \
-        wget "https://archive.openwrt.org/releases/${OPENWRT_VERSION}/targets/armsr/armv8/openwrt-${OPENWRT_VERSION}-armsr-armv8-generic-ext4-rootfs.img.gz" \
-        -O /var/vm/rootfs-${OPENWRT_VERSION}.img.gz \
-        && wget "https://archive.openwrt.org/releases/${OPENWRT_VERSION}/targets/armsr/armv8/openwrt-${OPENWRT_VERSION}-armsr-armv8-generic-kernel.bin" \
-        -O /var/vm/kernel.bin \ 
-        && wget "https://archive.openwrt.org/releases/${OPENWRT_VERSION}/targets/armsr/armv8/openwrt-${OPENWRT_VERSION}-armsr-armv8-rootfs.tar.gz" \ 
-        -O /tmp/rootfs-${OPENWRT_VERSION}.tar.gz ; \
+        echo "Error: CPU architecture $TARGETPLATFORM is not supported"; \
+        exit 1; \
     fi \
     \
-    # Use OpenWrt rootfs to download additional IPKs and put them into the Docker image
-    && mkdir /tmp/openwrt-rootfs \
-    && tar -xzf /tmp/rootfs-${OPENWRT_VERSION}.tar.gz -C /tmp/openwrt-rootfs \
-    && cp /etc/resolv.conf /tmp/openwrt-rootfs/etc/resolv.conf \
-    && chroot /tmp/openwrt-rootfs mkdir -p /var/lock \
-    && chroot /tmp/openwrt-rootfs opkg update \
-    # Download Luci and qemu guest agent \
-    && chroot /tmp/openwrt-rootfs opkg install qemu-ga luci usbutils --download-only \
+    # Get OpenWrt images  \
+    && wget $OPENWRT_IMAGE -O /var/vm/squashfs-combined-${OPENWRT_VERSION}.img.gz \
+    && gzip -d /var/vm/squashfs-combined-${OPENWRT_VERSION}.img.gz \
+    \
+    # Each CPU architecture needs a different SSH port to make a possible to make a parallel build \
+    && SSH_PORT=1022 \
+    \
+    # Boot OpenWrt in order to install additional packages and settings \
+    && if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
+        SSH_PORT=1022; \
+        qemu-system-x86_64 -M pc -nographic -nodefaults -m 256 \
+        -blockdev driver=raw,node-name=hd0,cache.direct=on,file.driver=file,file.filename=/var/vm/squashfs-combined-${OPENWRT_VERSION}.img \
+        -device virtio-blk-pci,drive=hd0 \
+        -device virtio-net,netdev=qlan0 -netdev user,id=qlan0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22 \
+        -device virtio-net,netdev=qwan0 -netdev user,id=qwan0 \
+        & QEMU_PID=$!; \
+    else \
+        SSH_PORT=2022; \
+        qemu-system-aarch64 -M virt -cpu cortex-a53 -nographic -nodefaults -m 256 \
+        -bios /usr/share/qemu/edk2-aarch64-code.fd \
+        -blockdev driver=raw,node-name=hd0,cache.direct=on,file.driver=file,file.filename=/var/vm/squashfs-combined-${OPENWRT_VERSION}.img \
+        -device virtio-blk-pci,drive=hd0 \
+        -device virtio-net,netdev=qlan0 -netdev user,id=qlan0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22 \
+        -device virtio-net,netdev=qwan0 -netdev user,id=qwan0 \
+        & QEMU_PID=$!; \
+    fi \
+    && echo "QEMU started with PID $QEMU_PID" \
+    \
+    # OpenWrt master uses apk insted of opkg \
+    && if [ "$OPENWRT_VERSION" = "master" ]; then \
+        PACKAGE_UPDATE="apk update"; \    
+        PACKAGE_INSTALL="apk add"; \
+        PACKAGE_REMOVE="apk del"; \
+        PACKAGE_EXTRA="libudev-zero"; \
+    else \
+        PACKAGE_UPDATE="opkg update"; \
+        PACKAGE_INSTALL="opkg install"; \
+        PACKAGE_REMOVE="opkg remove"; \    
+        PACKAGE_EXTRA=""; \
+    fi \
+    \
+    # Wait for OpenWrt startup and update repo \
+    && until ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new root@localhost -p $SSH_PORT "cat /etc/banner"; do echo "Waiting for OpenWrt boot ..."; sleep 1; done \
+    # Update package repo. Some some reasons it can fail. So try it until we are successfull. \
+    && until ssh root@localhost -p $SSH_PORT "${PACKAGE_UPDATE}"; do echo "Retrying ${PACKAGE_UPDATE} ..."; sleep 1; done\
+    # Download Luci, qemu guest agent and mDNS support \
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_INSTALL} qemu-ga luci luci-ssl umdns losetup ${PACKAGE_EXTRA}" \
     # Download Wi-Fi access point support and Wi-Fi USB devices support \
-    && chroot /tmp/openwrt-rootfs opkg install hostapd wpa-supplicant kmod-mt7921u --download-only \
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_INSTALL} hostapd wpa-supplicant kmod-mt7921u" \
     # Download celluar network support \
-    && chroot /tmp/openwrt-rootfs opkg install modemmanager kmod-usb-net-qmi-wwan luci-proto-modemmanager qmi-utils --download-only \
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_INSTALL} modemmanager kmod-usb-net-qmi-wwan luci-proto-modemmanager qmi-utils" \
     # Extra UI tools
-    && chroot /tmp/openwrt-rootfs opkg install luci-app-statistics bmon luci-app-nlbwmon --download-only \
-    && chroot /tmp/openwrt-rootfs opkg remove --force-depends dnsmasq odhcpd unbound \
-    && chroot /tmp/openwrt-rootfs opkg install git git-http nano  --download-only \
-    #&& chroot /tmp/openwrt-rootfs sh /tmp/opkg-upgrade.sh -f \
-    # && git clone https://github.com/tavinus/opkg-upgrade.git && /root/opkg-upgrade/opkg-upgrade.sh -f \
-    # Copy downloaded IPKs into the Docker image \
-    && cp /tmp/openwrt-rootfs/*.ipk /var/vm/packages \
-    && rm -rf /tmp/openwrt-rootfs \
-    && rm /tmp/rootfs-${OPENWRT_VERSION}.tar.gz \
+    && chroot /tmp/openwrt-rootfs opkg install luci-app-statistics bmon luci-app-nlbwmon mwan3 luci-app-mwan3 --download-only \
+    # Download basic GPS support \ 
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_INSTALL} kmod-usb-serial usbutils minicom gpsd" \
+    # Add Wireguard support \
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_INSTALL} wireguard-tools luci-proto-wireguard" \
+    \
+    # Add default network config \
+    && ssh root@localhost -p $SSH_PORT "uci set network.lan.ipaddr='172.31.1.1'; uci commit network" \
+    \
+    # Add some files \
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_INSTALL}  openssh-sftp-server" \
+    && chmod +x /var/vm/openwrt_additional/usr/bin/* \
+    && scp -P $SSH_PORT /var/vm/openwrt_additional/usr/bin/* root@localhost:/usr/bin \
+    && ssh root@localhost -p $SSH_PORT "${PACKAGE_REMOVE} openssh-sftp-server" \
+    \
+    # Sync changes into image and shutdown qemu \
+    && ssh root@localhost -p $SSH_PORT 'sync; halt' \
+    && while kill -0 $QEMU_PID 2>/dev/null; do echo "Waiting for qemu exit ..."; sleep 1; done \
+    \
+    && gzip /var/vm/squashfs-combined-${OPENWRT_VERSION}.img \
+    \
     && echo "OPENWRT_VERSION=\"${OPENWRT_VERSION}\"" > /var/vm/openwrt_metadata.conf \
     && echo "OPENWRT_IMAGE_CREATE_DATETIME=\"`date`\"" >> /var/vm/openwrt_metadata.conf \
-    && echo "OPENWRT_IMAGE_ID=\"`uuidgen`\"" >> /var/vm/openwrt_metadata.conf 
+    && echo "OPENWRT_IMAGE_ID=\"`uuidgen`\"" >> /var/vm/openwrt_metadata.conf \
+    && echo "OPENWRT_CPU_ARCH=\"${TARGETPLATFORM}\"" >> /var/vm/openwrt_metadata.conf \
+    && echo "CONTAINER_CREATE_DATETIME=\"`date`\"" >> /var/vm/openwrt_metadata.conf
 
-COPY supervisord.conf /etc/supervisord.conf
+COPY --from=builder /usr/local/bin/qemu-openwrt-web-backend /usr/local/bin/qemu-openwrt-web-backend
 COPY ./src /run/
-COPY ./web /var/www/
-COPY ./openwrt_additional /var/vm/openwrt_additional
-COPY ./script-server /var/script-server
+COPY ./web-frontend /var/www/
 
 RUN chmod +x /run/*.sh
 
@@ -93,7 +194,6 @@ EXPOSE 8006
 EXPOSE 8000
 EXPOSE 8022
 
-RUN echo "$VERSION_ARG" > /run/version \
-    && echo "CONTAINER_CREATE_DATETIME=\"`date`\"" >> /var/vm/openwrt_metadata.conf
+HEALTHCHECK --start-period=10m CMD /run/healthcheck.sh
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
+CMD ["/run/init_container.sh"]
